@@ -24,6 +24,14 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
+function normalizeSearch(s: string) {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 // ✅ aponta pro emulador
 const host = process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8080";
 db.settings({ host, ssl: false });
@@ -50,6 +58,7 @@ async function run() {
         ref,
         {
           name_pt: f.name_pt,
+          name_search: normalizeSearch(f.name_pt),
           source: f.source,
           group: f.group ?? null,
           nutrientsPer100g: f.nutrientsPer100g ?? {},

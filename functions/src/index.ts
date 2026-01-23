@@ -18,8 +18,12 @@ function toInt(v: any, def: number) {
   return Number.isFinite(n) ? Math.trunc(n) : def;
 }
 
-function normalizeQuery(q: string) {
-  return q.trim();
+function normalizeSearch(s: string) {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 // ✅ GET /foods?q=arroz&limit=20
@@ -41,11 +45,12 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     }
 
     const qRaw = String(req.query.q ?? "");
-    const q = normalizeQuery(qRaw);
+    const q = qRaw.trim();
+    const qNorm = normalizeSearch(qRaw);
     const limit = Math.min(Math.max(toInt(req.query.limit, 20), 1), 50);
 
     // se não mandar q, retorna alguns alimentos (primeiros)
-    if (!q) {
+    if (!qNorm) {
       const snap = await db.collection("foods").orderBy("name_pt").limit(limit).get();
       res.json({
         query: q,
@@ -59,36 +64,25 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
       return;
     }
 
-    // Busca prefix (case sensitive dependendo do conteúdo; a TACO está com maiúsculas/minúsculas normais)
-    // Estratégia simples: tenta com q original e, se não vier nada, tenta capitalizado.
-    const queries = [q, q[0]?.toUpperCase() + q.slice(1)];
+    const snap = await db
+      .collection("foods")
+      .orderBy("name_search")
+      .startAt(qNorm)
+      .endAt(qNorm + "\uf8ff")
+      .limit(limit)
+      .get();
 
-    for (const qq of queries) {
-      const snap = await db
-        .collection("foods")
-        .orderBy("name_pt")
-        .startAt(qq)
-        .endAt(qq + "\uf8ff")
-        .limit(limit)
-        .get();
-
-      if (!snap.empty) {
-        res.json({
-          query: q,
-          normalized: qq,
-          count: snap.size,
-          items: snap.docs.map((d) => ({
-            id: d.id,
-            name_pt: d.get("name_pt"),
-            source: d.get("source"),
-            nutrientsPer100g: d.get("nutrientsPer100g") ?? {},
-          })),
-        });
-        return;
-      }
-    }
-
-    res.json({ query: q, count: 0, items: [] });
+    res.json({
+      query: q,
+      normalized: qNorm,
+      count: snap.size,
+      items: snap.docs.map((d) => ({
+        id: d.id,
+        name_pt: d.get("name_pt"),
+        source: d.get("source"),
+        nutrientsPer100g: d.get("nutrientsPer100g") ?? {},
+      })),
+    });
   } catch (e: any) {
     console.error(e);
     res.status(500).json({ error: e?.message ?? "Erro interno" });
