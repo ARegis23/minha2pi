@@ -1,0 +1,90 @@
+# ===============================
+# Node / JavaScript / TypeScript
+# ===============================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===============================
+# Build / dist
+# ===============================
+dist/
+build/
+lib/
+.out/
+.cache/
+coverage/
+
+# ===============================
+# Firebase
+# ===============================
+.firebase/
+.firebaserc
+firebase-debug.log
+firebase-debug.*.log
+
+# Emulador (DADOS LOCAIS)
+.emulator-data/
+.emulators/
+firestore-debug.log
+database-debug.log
+storage-debug.log
+
+# ===============================
+# Environment variables
+# ===============================
+.env
+.env.*
+*.local
+
+# ===============================
+# IDE / Editor
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# ===============================
+# OS files
+# ===============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===============================
+# Logs
+# ===============================
+*.log
+
+# ===============================
+# Tools / import artifacts
+# ===============================
+tools/import/*.json
+tools/import/*.xlsx
+
+# ===============================
+# Flutter (se estiver no mesmo repo)
+# ===============================
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+build/
+
+# ===============================
+# Python (se algum dia usar)
+# ===============================
+__pycache__/
+*.pyc
+
+# ===============================
+# Secrets
+# ===============================
+*.pem
+*.key
+*.crt
+*.p12
