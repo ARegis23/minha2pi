@@ -1,5 +1,6 @@
 import { onRequest } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 
 admin.initializeApp({ projectId: "minha2pi" });
 const db = admin.firestore();
@@ -128,6 +129,241 @@ export const food = onRequest({ region: "southamerica-east1" }, async (req, res)
   } catch (e: any) {
     console.error(e);
     res.status(500).json({ error: e?.message ?? "Erro interno" });
+  }
+});
+
+// =========================
+// 1) GET/POST /recipes
+// =========================
+export const recipes = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") return void res.status(204).send("");
+
+    if (req.method === "GET") {
+      const q = String(req.query.q ?? "").trim();
+      const limit = Math.min(Math.max(Number(req.query.limit ?? 20), 1), 50);
+
+      let query = db.collection("recipes").orderBy("updatedAt", "desc").limit(limit);
+
+      // MVP: se tiver q, filtra no client (simples e funciona)
+      // (Depois evoluímos para name_search + prefix query)
+      const snap = await query.get();
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) }))
+        .filter((r) => {
+          if (!q) return true;
+          const hay = normalizeSearch(r.name_pt ?? "");
+          return hay.includes(normalizeSearch(q));
+        })
+        .map((r) => ({
+          id: r.id,
+          name_pt: r.name_pt ?? null,
+          servings: r.servings ?? null,
+          prep_minutes: r.prep_minutes ?? null,
+          updatedAt: r.updatedAt ?? null,
+        }));
+
+      return void res.json({ query: q, count: items.length, items });
+    }
+
+    if (req.method === "POST") {
+      const body = req.body ?? {};
+      const name_pt = String(body.name_pt ?? "").trim();
+      const description = String(body.description ?? "").trim();
+      const servings = Number(body.servings ?? 1);
+      const prep_minutes = body.prep_minutes != null ? Number(body.prep_minutes) : null;
+
+      if (!name_pt) return void res.status(400).json({ error: "name_pt é obrigatório" });
+      if (!Number.isFinite(servings) || servings <= 0) {
+        return void res.status(400).json({ error: "servings deve ser > 0" });
+      }
+
+      const doc = {
+        name_pt,
+        name_search: normalizeSearch(name_pt),
+        description: description || null,
+        servings,
+        prep_minutes: Number.isFinite(prep_minutes as number) ? prep_minutes : null,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      const ref = await db.collection("recipes").add(doc);
+      return void res.status(201).json({ id: ref.id, ...doc });
+    }
+
+    return void res.status(405).json({ error: "Método não permitido" });
+  } catch (e: any) {
+    console.error(e);
+    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+  }
+});
+
+// =========================
+// 2) GET /recipe?id=xxx
+// =========================
+export const recipe = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+
+    const id = String(req.query.id ?? "").trim();
+    if (!id) return void res.status(400).json({ error: "id é obrigatório" });
+
+    const ref = db.collection("recipes").doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id });
+
+    const recipeData = snap.data() as any;
+
+    const ingSnap = await ref.collection("ingredients").orderBy("order", "asc").get();
+    const ingredients = ingSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+
+    return void res.json({
+      id,
+      recipe: {
+        name_pt: recipeData.name_pt ?? null,
+        description: recipeData.description ?? null,
+        servings: recipeData.servings ?? null,
+        prep_minutes: recipeData.prep_minutes ?? null,
+        createdAt: recipeData.createdAt ?? null,
+        updatedAt: recipeData.updatedAt ?? null,
+      },
+      ingredients,
+    });
+  } catch (e: any) {
+    console.error(e);
+    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+  }
+});
+
+// =========================
+// 3) POST /recipeAddIngredient?id=xxx
+// =========================
+export const recipeAddIngredient = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") return void res.status(204).send("");
+    if (req.method !== "POST") return void res.status(405).json({ error: "Use POST" });
+
+    const recipeId = String(req.query.id ?? "").trim();
+    if (!recipeId) return void res.status(400).json({ error: "id (recipeId) é obrigatório" });
+
+    const { foodId, grams, note, order } = req.body ?? {};
+    const foodIdStr = String(foodId ?? "").trim();
+    const gramsNum = Number(grams);
+
+    if (!foodIdStr) return void res.status(400).json({ error: "foodId é obrigatório" });
+    if (!Number.isFinite(gramsNum) || gramsNum <= 0) {
+      return void res.status(400).json({ error: "grams deve ser > 0" });
+    }
+
+    // valida se o food existe
+    const foodSnap = await db.collection("foods").doc(foodIdStr).get();
+    if (!foodSnap.exists) return void res.status(404).json({ error: "Food não encontrado", foodId: foodIdStr });
+
+    const recipeRef = db.collection("recipes").doc(recipeId);
+    const recipeSnap = await recipeRef.get();
+    if (!recipeSnap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id: recipeId });
+
+    const doc = {
+      foodId: foodIdStr,
+      grams: gramsNum,
+      note: note ? String(note).trim() : null,
+      order: Number.isFinite(Number(order)) ? Number(order) : 999,
+      createdAt: FieldValue.serverTimestamp(),
+    };
+
+    const ref = await recipeRef.collection("ingredients").add(doc);
+    await recipeRef.update({ updatedAt: FieldValue.serverTimestamp() });
+
+    return void res.status(201).json({ id: ref.id, ...doc });
+  } catch (e: any) {
+    console.error(e);
+    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+  }
+});
+
+// =========================
+// 4) GET /recipeNutrition?id=xxx&servings=Y
+// =========================
+export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+
+    const id = String(req.query.id ?? "").trim();
+    if (!id) return void res.status(400).json({ error: "id é obrigatório" });
+
+    const recipeRef = db.collection("recipes").doc(id);
+    const recipeSnap = await recipeRef.get();
+    if (!recipeSnap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id });
+
+    const recipeData = recipeSnap.data() as any;
+
+    const ingSnap = await recipeRef.collection("ingredients").get();
+    const ingredients = ingSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+
+    // servings: usa query > recipe.servings > 1
+    const servings = Number(req.query.servings ?? recipeData.servings ?? 1);
+    const servingsSafe = Number.isFinite(servings) && servings > 0 ? servings : 1;
+
+    // soma nutrientes
+    const totals: Record<string, number> = {};
+    const details: any[] = [];
+
+    for (const ing of ingredients) {
+      const foodId = String(ing.foodId ?? "").trim();
+      const grams = Number(ing.grams ?? 0);
+      if (!foodId || !Number.isFinite(grams) || grams <= 0) continue;
+
+      const foodSnap = await db.collection("foods").doc(foodId).get();
+      if (!foodSnap.exists) continue;
+
+      const food = foodSnap.data() as any;
+      const per100 = (food.nutrientsPer100g ?? {}) as Record<string, number>;
+      const factor = grams / 100;
+
+      const ingNutrients: Record<string, number> = {};
+      for (const [k, v] of Object.entries(per100)) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) continue;
+        const add = n * factor;
+        totals[k] = Number(((totals[k] ?? 0) + add).toFixed(6));
+        ingNutrients[k] = Number(add.toFixed(6));
+      }
+
+      details.push({
+        foodId,
+        name_pt: food.name_pt ?? null,
+        grams,
+        nutrients: ingNutrients,
+      });
+    }
+
+    // por porção
+    const perServing: Record<string, number> = {};
+    for (const [k, v] of Object.entries(totals)) {
+      perServing[k] = Number((v / servingsSafe).toFixed(6));
+    }
+
+    return void res.json({
+      id,
+      recipe: { name_pt: recipeData.name_pt ?? null, servings: recipeData.servings ?? null },
+      servings_used: servingsSafe,
+      totals,
+      perServing,
+      ingredients_count: ingredients.length,
+      details,
+    });
+  } catch (e: any) {
+    console.error(e);
+    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
   }
 });
 
