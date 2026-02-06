@@ -67,7 +67,30 @@ firebase emulators:start --only firestore,functions
 
 ---
 
-### 3️⃣ Importar os alimentos (TACO)
+### 3️⃣ Gerar o JSON normalizado da nova base
+
+Coloque o arquivo Excel formatado na pasta `tools/import` (por padrão, `taco.xlsx`) e gere o JSON normalizado:
+
+```bash
+cd tools/import
+npx ts-node -P .\tsconfig.json .\taco_to_foods_json.ts
+```
+
+Se precisar apontar um arquivo diferente, use os parâmetros:
+
+```bash
+cd tools/import
+npx ts-node -P .\tsconfig.json .\taco_to_foods_json.ts --input .\minha_base.xlsx --sheet "Planilha1" --header-lines 1 --header-row 1
+```
+
+* `--input`: caminho do arquivo Excel (ou use `INPUT_FILE`).
+* `--sheet`: nome da aba.
+* `--header-lines`: quantas linhas compõem o cabeçalho (ex: 1 para uma base já formatada).
+* `--header-row`: linha exata do cabeçalho (1-based), útil quando não existe "Descrição dos alimentos".
+
+---
+
+### 4️⃣ Importar os alimentos (TACO)
 
 Em outro terminal:
 
