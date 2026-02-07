@@ -317,15 +317,40 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     const totals: Record<string, number> = {};
     const details: any[] = [];
 
+    // =========================
+    // ✅ Versão otimizada: busca foods em paralelo (Promise.all)
+    // =========================
+
+    // 1) pega ids únicos de foods usados nos ingredientes
+    const uniqueFoodIds = Array.from(
+      new Set(
+        ingredients
+          .map((ing) => String(ing.foodId ?? "").trim())
+          .filter((id) => id.length > 0)
+      )
+    );
+
+    // 2) busca todos os foods de uma vez (em paralelo)
+    const foodSnaps = await Promise.all(
+      uniqueFoodIds.map((foodId) => db.collection("foods").doc(foodId).get())
+    );
+
+    // 3) monta um "mapa" foodId -> dados do food
+    const foodsMap = new Map<string, any>();
+    for (const snap of foodSnaps) {
+      if (!snap.exists) continue;
+      foodsMap.set(snap.id, snap.data());
+    }
+
+    // 4) agora calcula usando o mapa (sem novas leituras no Firestore)
     for (const ing of ingredients) {
       const foodId = String(ing.foodId ?? "").trim();
       const grams = Number(ing.grams ?? 0);
       if (!foodId || !Number.isFinite(grams) || grams <= 0) continue;
 
-      const foodSnap = await db.collection("foods").doc(foodId).get();
-      if (!foodSnap.exists) continue;
+      const food = foodsMap.get(foodId);
+      if (!food) continue;
 
-      const food = foodSnap.data() as any;
       const per100 = (food.nutrientsPer100g ?? {}) as Record<string, number>;
       const factor = grams / 100;
 
@@ -333,6 +358,7 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
       for (const [k, v] of Object.entries(per100)) {
         const n = Number(v);
         if (!Number.isFinite(n)) continue;
+
         const add = n * factor;
         totals[k] = Number(((totals[k] ?? 0) + add).toFixed(6));
         ingNutrients[k] = Number(add.toFixed(6));
@@ -365,7 +391,7 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     console.error(e);
     return void res.status(500).json({ error: e?.message ?? "Erro interno" });
   }
-});
+})
 
 export const debugEnv = onRequest({ region: "southamerica-east1" }, (req, res) => {
   res.json({
