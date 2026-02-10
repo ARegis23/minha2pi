@@ -2,6 +2,26 @@ import { onRequest } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 
+// =============================================
+// 📦 PADRÃO DE RESPOSTA DA API
+// =============================================
+
+function sendOk(res: any, data: any, status = 200) {
+  res.status(status).json({
+    ok: true,
+    data,
+    timestamp: Date.now(),
+  });
+}
+
+function sendError(res: any, message: string, status = 400) {
+  res.status(status).json({
+    ok: false,
+    error: message,
+    timestamp: Date.now(),
+  });
+}
+
 admin.initializeApp({ projectId: "minha2pi" });
 const db = admin.firestore();
 
@@ -41,7 +61,7 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     }
 
     if (req.method !== "GET") {
-      res.status(405).json({ error: "Use GET" });
+      sendError(res, "Use GET", 405);
       return;
     }
 
@@ -53,7 +73,7 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     // se não mandar q, retorna alguns alimentos (primeiros)
     if (!qNorm) {
       const snap = await db.collection("foods").orderBy("name_pt").limit(limit).get();
-      res.json({
+      sendOk(res, {
         query: q,
         count: snap.size,
         items: snap.docs.map((d) => ({
@@ -73,7 +93,7 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
       .limit(limit)
       .get();
 
-    res.json({
+    sendOk(res, {
       query: q,
       normalized: qNorm,
       count: snap.size,
@@ -86,7 +106,7 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     });
   } catch (e: any) {
     console.error(e);
-    res.status(500).json({ error: e?.message ?? "Erro interno" });
+    sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
 
@@ -103,7 +123,7 @@ export const food = onRequest({ region: "southamerica-east1" }, async (req, res)
     }
 
     if (req.method !== "GET") {
-      res.status(405).json({ error: "Use GET" });
+      sendError(res, "Use GET", 405);
       return;
     }
 
@@ -111,24 +131,24 @@ export const food = onRequest({ region: "southamerica-east1" }, async (req, res)
     const id = String(req.query.id ?? "").trim();
 
     if (!id) {
-      res.status(400).json({ error: "Informe ?id= (ex: ?id=1)" });
+      sendError(res, "Informe ?id= (ex: ?id=1)", 400);
       return;
     }
 
     const doc = await db.collection("foods").doc(id).get();
 
     if (!doc.exists) {
-      res.status(404).json({ error: "Food não encontrado", id });
+      sendError(res, "Food não encontrado", 404);
       return;
     }
 
-    res.json({
+    sendOk(res, {
       id: doc.id,
       ...doc.data(),
     });
   } catch (e: any) {
     console.error(e);
-    res.status(500).json({ error: e?.message ?? "Erro interno" });
+    sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
 
@@ -167,7 +187,7 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
           updatedAt: r.updatedAt ?? null,
         }));
 
-      return void res.json({ query: q, count: items.length, items });
+      return void sendOk(res, { query: q, count: items.length, items });
     }
 
     if (req.method === "POST") {
@@ -177,9 +197,12 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
       const servings = Number(body.servings ?? 1);
       const prep_minutes = body.prep_minutes != null ? Number(body.prep_minutes) : null;
 
-      if (!name_pt) return void res.status(400).json({ error: "name_pt é obrigatório" });
+      if (!name_pt) {
+        sendError(res, "name_pt é obrigatório", 400);
+        return;
+      }
       if (!Number.isFinite(servings) || servings <= 0) {
-        return void res.status(400).json({ error: "servings deve ser > 0" });
+        return void sendError(res, "servings deve ser > 0", 400);
       }
 
       const doc = {
@@ -193,13 +216,13 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
       };
 
       const ref = await db.collection("recipes").add(doc);
-      return void res.status(201).json({ id: ref.id, ...doc });
+      return void sendOk(res, { id: ref.id, name_pt, servings, description });
     }
 
-    return void res.status(405).json({ error: "Método não permitido" });
+    return void sendError(res, "Método não permitido", 405);
   } catch (e: any) {
     console.error(e);
-    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+    return void sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
 
@@ -211,18 +234,18 @@ export const recipe = onRequest({ region: "southamerica-east1" }, async (req, re
     res.set("Access-Control-Allow-Origin", "*");
 
     const id = String(req.query.id ?? "").trim();
-    if (!id) return void res.status(400).json({ error: "id é obrigatório" });
+    if (!id) return void sendError(res, "id é obrigatório", 400);
 
     const ref = db.collection("recipes").doc(id);
     const snap = await ref.get();
-    if (!snap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id });
+    if (!snap.exists) return void sendError(res, "Recipe não encontrada", 404);
 
     const recipeData = snap.data() as any;
 
     const ingSnap = await ref.collection("ingredients").orderBy("order", "asc").get();
     const ingredients = ingSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
-    return void res.json({
+    return void sendOk(res, {
       id,
       recipe: {
         name_pt: recipeData.name_pt ?? null,
@@ -236,7 +259,7 @@ export const recipe = onRequest({ region: "southamerica-east1" }, async (req, re
     });
   } catch (e: any) {
     console.error(e);
-    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+    return void sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
 
@@ -250,27 +273,27 @@ export const recipeAddIngredient = onRequest({ region: "southamerica-east1" }, a
     res.set("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") return void res.status(204).send("");
-    if (req.method !== "POST") return void res.status(405).json({ error: "Use POST" });
+    if (req.method !== "POST") return void sendError(res, "Use POST", 405);
 
     const recipeId = String(req.query.id ?? "").trim();
-    if (!recipeId) return void res.status(400).json({ error: "id (recipeId) é obrigatório" });
+    if (!recipeId) return void sendError(res, "id (recipeId) é obrigatório", 400);
 
     const { foodId, grams, note, order } = req.body ?? {};
     const foodIdStr = String(foodId ?? "").trim();
     const gramsNum = Number(grams);
 
-    if (!foodIdStr) return void res.status(400).json({ error: "foodId é obrigatório" });
+    if (!foodIdStr) return void sendError(res, "foodId é obrigatório", 400);
     if (!Number.isFinite(gramsNum) || gramsNum <= 0) {
-      return void res.status(400).json({ error: "grams deve ser > 0" });
+      return void sendError(res, "grams deve ser > 0", 400);
     }
 
     // valida se o food existe
     const foodSnap = await db.collection("foods").doc(foodIdStr).get();
-    if (!foodSnap.exists) return void res.status(404).json({ error: "Food não encontrado", foodId: foodIdStr });
+    if (!foodSnap.exists) return void sendError(res, "Food não encontrado", 404);
 
     const recipeRef = db.collection("recipes").doc(recipeId);
     const recipeSnap = await recipeRef.get();
-    if (!recipeSnap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id: recipeId });
+    if (!recipeSnap.exists) return void sendError(res, "Recipe não encontrada", 404);
 
     const doc = {
       foodId: foodIdStr,
@@ -283,10 +306,10 @@ export const recipeAddIngredient = onRequest({ region: "southamerica-east1" }, a
     const ref = await recipeRef.collection("ingredients").add(doc);
     await recipeRef.update({ updatedAt: FieldValue.serverTimestamp() });
 
-    return void res.status(201).json({ id: ref.id, ...doc });
+    return void sendOk(res, { id: ref.id, ...doc }, 201);
   } catch (e: any) {
     console.error(e);
-    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+    return void sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
 
@@ -298,11 +321,11 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     res.set("Access-Control-Allow-Origin", "*");
 
     const id = String(req.query.id ?? "").trim();
-    if (!id) return void res.status(400).json({ error: "id é obrigatório" });
+    if (!id) return void sendError(res, "id é obrigatório", 400);
 
     const recipeRef = db.collection("recipes").doc(id);
     const recipeSnap = await recipeRef.get();
-    if (!recipeSnap.exists) return void res.status(404).json({ error: "Recipe não encontrada", id });
+    if (!recipeSnap.exists) return void sendError(res, "Recipe não encontrada", 404);
 
     const recipeData = recipeSnap.data() as any;
 
@@ -378,7 +401,7 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
       perServing[k] = Number((v / servingsSafe).toFixed(6));
     }
 
-    return void res.json({
+    return void sendOk(res, {
       id,
       recipe: { name_pt: recipeData.name_pt ?? null, servings: recipeData.servings ?? null },
       servings_used: servingsSafe,
@@ -389,12 +412,12 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     });
   } catch (e: any) {
     console.error(e);
-    return void res.status(500).json({ error: e?.message ?? "Erro interno" });
+    return void sendError(res, e?.message ?? "Erro interno", 500);
   }
 })
 
 export const debugEnv = onRequest({ region: "southamerica-east1" }, (req, res) => {
-  res.json({
+  sendOk(res, {
     FIRESTORE_EMULATOR_HOST: process.env.FIRESTORE_EMULATOR_HOST ?? null,
     GCLOUD_PROJECT: process.env.GCLOUD_PROJECT ?? null,
     FUNCTIONS_EMULATOR: process.env.FUNCTIONS_EMULATOR ?? null,
