@@ -1,9 +1,9 @@
-import { onRequest } from "firebase-functions/v2/https";
+﻿import { onRequest } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
-
+import { Food, Nutrients } from "./models";
 // =============================================
-// 📦 PADRÃO DE RESPOSTA DA API
+// ðŸ“¦ PADRÃƒO DE RESPOSTA DA API
 // =============================================
 
 function sendOk(res: any, data: any, status = 200) {
@@ -22,15 +22,19 @@ function sendError(res: any, message: string, status = 400) {
   });
 }
 
+function sendNoContent(res: any) {
+  res.status(204).send("");
+}
+
 admin.initializeApp({ projectId: "minha2pi" });
 const db = admin.firestore();
 
-// 🔧 Força conexão com o Firestore Emulator quando estiver disponível
+// ðŸ”§ ForÃ§a conexÃ£o com o Firestore Emulator quando estiver disponÃ­vel
 if (process.env.FIRESTORE_EMULATOR_HOST) {
   db.settings({ host: "127.0.0.1:8080", ssl: false });
-  console.log("✅ Firestore Emulator:", process.env.FIRESTORE_EMULATOR_HOST);
+  console.log("âœ… Firestore Emulator:", process.env.FIRESTORE_EMULATOR_HOST);
 } else {
-  console.log("⚠️ FIRESTORE_EMULATOR_HOST não definido; usando Firestore padrão (produção).");
+  console.log("âš ï¸ FIRESTORE_EMULATOR_HOST nÃ£o definido; usando Firestore padrÃ£o (produÃ§Ã£o).");
 }
 
 // helpers
@@ -47,7 +51,7 @@ function normalizeSearch(s: string) {
     .trim();
 }
 
-// ✅ GET /foods?q=arroz&limit=20
+// âœ… GET /foods?q=arroz&limit=20
 export const foods = onRequest({ region: "southamerica-east1" }, async (req, res) => {
   try {
     // CORS simples (para uso no Flutter/web)
@@ -55,10 +59,7 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === "OPTIONS") {
-      res.status(204).send("");
-      return;
-    }
+    if (req.method === "OPTIONS") return void sendNoContent(res);
 
     if (req.method !== "GET") {
       sendError(res, "Use GET", 405);
@@ -66,68 +67,81 @@ export const foods = onRequest({ region: "southamerica-east1" }, async (req, res
     }
 
     const qRaw = String(req.query.q ?? "");
-    const q = qRaw.trim();
     const qNorm = normalizeSearch(qRaw);
+    const cursorRaw = String(req.query.cursor ?? "").trim();
     const limit = Math.min(Math.max(toInt(req.query.limit, 20), 1), 50);
 
-    // se não mandar q, retorna alguns alimentos (primeiros)
+    // sem q: lista geral ordenada por name_pt
     if (!qNorm) {
-      const snap = await db.collection("foods").orderBy("name_pt").limit(limit).get();
+      let query = db.collection("foods").orderBy("name_pt");
+      if (cursorRaw) query = query.startAfter(cursorRaw);
+
+      const snap = await query.limit(limit + 1).get();
+      const docs = snap.docs.slice(0, limit);
+      const hasMore = snap.size > limit;
+      const nextCursor = hasMore ? String(docs[docs.length - 1]?.get("name_pt") ?? "") : null;
+
       sendOk(res, {
-        query: q,
-        count: snap.size,
-        items: snap.docs.map((d) => ({
+        items: docs.map((d) => ({
           id: d.id,
           name_pt: d.get("name_pt"),
           source: d.get("source"),
         })),
+        nextCursor,
       });
       return;
     }
 
-    const snap = await db
+    // com q: busca prefixada ordenada por name_search
+    let query = db
       .collection("foods")
       .orderBy("name_search")
       .startAt(qNorm)
-      .endAt(qNorm + "\uf8ff")
-      .limit(limit)
-      .get();
+      .endAt(qNorm + "\uf8ff");
+
+    if (cursorRaw) {
+      const cursorNorm = normalizeSearch(cursorRaw);
+      if (cursorNorm) query = query.startAfter(cursorNorm);
+    }
+
+    const snap = await query.limit(limit + 1).get();
+    const docs = snap.docs.slice(0, limit);
+    const hasMore = snap.size > limit;
+    const nextCursor = hasMore
+      ? String(
+        docs[docs.length - 1]?.get("name_search") ??
+        normalizeSearch(String(docs[docs.length - 1]?.get("name_pt") ?? ""))
+      )
+      : null;
 
     sendOk(res, {
-      query: q,
-      normalized: qNorm,
-      count: snap.size,
-      items: snap.docs.map((d) => ({
+      items: docs.map((d) => ({
         id: d.id,
         name_pt: d.get("name_pt"),
         source: d.get("source"),
         nutrientsPer100g: d.get("nutrientsPer100g") ?? {},
       })),
+      nextCursor,
     });
   } catch (e: any) {
     console.error(e);
     sendError(res, e?.message ?? "Erro interno", 500);
   }
 });
-
-// ✅ GET /food/:id  (detalhe)
 export const food = onRequest({ region: "southamerica-east1" }, async (req, res) => {
   try {
     res.set("Access-Control-Allow-Origin", "*");
     res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === "OPTIONS") {
-      res.status(204).send("");
-      return;
-    }
+    if (req.method === "OPTIONS") return void sendNoContent(res);
 
     if (req.method !== "GET") {
       sendError(res, "Use GET", 405);
       return;
     }
 
-    // path: /food?id=123 (modo simples) OU /food/123 (se você colocar rewrites mais tarde)
+    // path: /food?id=123 (modo simples) OU /food/123 (se vocÃª colocar rewrites mais tarde)
     const id = String(req.query.id ?? "").trim();
 
     if (!id) {
@@ -138,7 +152,7 @@ export const food = onRequest({ region: "southamerica-east1" }, async (req, res)
     const doc = await db.collection("foods").doc(id).get();
 
     if (!doc.exists) {
-      sendError(res, "Food não encontrado", 404);
+      sendError(res, "Food nÃ£o encontrado", 404);
       return;
     }
 
@@ -152,6 +166,47 @@ export const food = onRequest({ region: "southamerica-east1" }, async (req, res)
   }
 });
 
+// GET /foodPortion?id=80&grams=80
+export const foodPortion = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") return void sendNoContent(res);
+    if (req.method !== "GET") return void sendError(res, "Use GET", 405);
+
+    const id = String(req.query.id ?? "").trim();
+    const grams = Number(req.query.grams ?? 100);
+    if (!id) return void sendError(res, "id é obrigatório", 400);
+    if (!Number.isFinite(grams) || grams <= 0) return void sendError(res, "grams deve ser > 0", 400);
+
+    const doc = await db.collection("foods").doc(id).get();
+    if (!doc.exists) return void sendError(res, "Food não encontrado", 404);
+
+    const food = doc.data() as Food;
+    const per100 = (food.nutrientsPer100g ?? {}) as Nutrients;
+    const factor = grams / 100;
+    const nutrients: Nutrients = {};
+
+    for (const [k, v] of Object.entries(per100)) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) continue;
+      nutrients[k] = Number((n * factor).toFixed(6));
+    }
+
+    return void sendOk(res, {
+      id: doc.id,
+      name_pt: food.name_pt ?? null,
+      grams,
+      nutrients,
+    });
+  } catch (e: any) {
+    console.error(e);
+    return void sendError(res, e?.message ?? "Erro interno", 500);
+  }
+});
+
 // =========================
 // 1) GET/POST /recipes
 // =========================
@@ -161,7 +216,7 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
     res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === "OPTIONS") return void res.status(204).send("");
+    if (req.method === "OPTIONS") return void sendNoContent(res);
 
     if (req.method === "GET") {
       const q = String(req.query.q ?? "").trim();
@@ -170,7 +225,7 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
       let query = db.collection("recipes").orderBy("updatedAt", "desc").limit(limit);
 
       // MVP: se tiver q, filtra no client (simples e funciona)
-      // (Depois evoluímos para name_search + prefix query)
+      // (Depois evoluÃ­mos para name_search + prefix query)
       const snap = await query.get();
       const items = snap.docs
         .map((d) => ({ id: d.id, ...(d.data() as any) }))
@@ -198,7 +253,7 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
       const prep_minutes = body.prep_minutes != null ? Number(body.prep_minutes) : null;
 
       if (!name_pt) {
-        sendError(res, "name_pt é obrigatório", 400);
+        sendError(res, "name_pt Ã© obrigatÃ³rio", 400);
         return;
       }
       if (!Number.isFinite(servings) || servings <= 0) {
@@ -219,7 +274,7 @@ export const recipes = onRequest({ region: "southamerica-east1" }, async (req, r
       return void sendOk(res, { id: ref.id, name_pt, servings, description });
     }
 
-    return void sendError(res, "Método não permitido", 405);
+    return void sendError(res, "MÃ©todo nÃ£o permitido", 405);
   } catch (e: any) {
     console.error(e);
     return void sendError(res, e?.message ?? "Erro interno", 500);
@@ -234,11 +289,11 @@ export const recipe = onRequest({ region: "southamerica-east1" }, async (req, re
     res.set("Access-Control-Allow-Origin", "*");
 
     const id = String(req.query.id ?? "").trim();
-    if (!id) return void sendError(res, "id é obrigatório", 400);
+    if (!id) return void sendError(res, "id Ã© obrigatÃ³rio", 400);
 
     const ref = db.collection("recipes").doc(id);
     const snap = await ref.get();
-    if (!snap.exists) return void sendError(res, "Recipe não encontrada", 404);
+    if (!snap.exists) return void sendError(res, "Recipe nÃ£o encontrada", 404);
 
     const recipeData = snap.data() as any;
 
@@ -272,28 +327,28 @@ export const recipeAddIngredient = onRequest({ region: "southamerica-east1" }, a
     res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Content-Type");
 
-    if (req.method === "OPTIONS") return void res.status(204).send("");
+    if (req.method === "OPTIONS") return void sendNoContent(res);
     if (req.method !== "POST") return void sendError(res, "Use POST", 405);
 
     const recipeId = String(req.query.id ?? "").trim();
-    if (!recipeId) return void sendError(res, "id (recipeId) é obrigatório", 400);
+    if (!recipeId) return void sendError(res, "id (recipeId) Ã© obrigatÃ³rio", 400);
 
     const { foodId, grams, note, order } = req.body ?? {};
     const foodIdStr = String(foodId ?? "").trim();
     const gramsNum = Number(grams);
 
-    if (!foodIdStr) return void sendError(res, "foodId é obrigatório", 400);
+    if (!foodIdStr) return void sendError(res, "foodId Ã© obrigatÃ³rio", 400);
     if (!Number.isFinite(gramsNum) || gramsNum <= 0) {
       return void sendError(res, "grams deve ser > 0", 400);
     }
 
     // valida se o food existe
     const foodSnap = await db.collection("foods").doc(foodIdStr).get();
-    if (!foodSnap.exists) return void sendError(res, "Food não encontrado", 404);
+    if (!foodSnap.exists) return void sendError(res, "Food nÃ£o encontrado", 404);
 
     const recipeRef = db.collection("recipes").doc(recipeId);
     const recipeSnap = await recipeRef.get();
-    if (!recipeSnap.exists) return void sendError(res, "Recipe não encontrada", 404);
+    if (!recipeSnap.exists) return void sendError(res, "Recipe nÃ£o encontrada", 404);
 
     const doc = {
       foodId: foodIdStr,
@@ -321,11 +376,11 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     res.set("Access-Control-Allow-Origin", "*");
 
     const id = String(req.query.id ?? "").trim();
-    if (!id) return void sendError(res, "id é obrigatório", 400);
+    if (!id) return void sendError(res, "id Ã© obrigatÃ³rio", 400);
 
     const recipeRef = db.collection("recipes").doc(id);
     const recipeSnap = await recipeRef.get();
-    if (!recipeSnap.exists) return void sendError(res, "Recipe não encontrada", 404);
+    if (!recipeSnap.exists) return void sendError(res, "Recipe nÃ£o encontrada", 404);
 
     const recipeData = recipeSnap.data() as any;
 
@@ -341,10 +396,10 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
     const details: any[] = [];
 
     // =========================
-    // ✅ Versão otimizada: busca foods em paralelo (Promise.all)
+    // âœ… VersÃ£o otimizada: busca foods em paralelo (Promise.all)
     // =========================
 
-    // 1) pega ids únicos de foods usados nos ingredientes
+    // 1) pega ids Ãºnicos de foods usados nos ingredientes
     const uniqueFoodIds = Array.from(
       new Set(
         ingredients
@@ -395,7 +450,7 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
       });
     }
 
-    // por porção
+    // por porÃ§Ã£o
     const perServing: Record<string, number> = {};
     for (const [k, v] of Object.entries(totals)) {
       perServing[k] = Number((v / servingsSafe).toFixed(6));
@@ -416,6 +471,105 @@ export const recipeNutrition = onRequest({ region: "southamerica-east1" }, async
   }
 })
 
+
+// =========================
+// 5) POST /recipeCalc
+// =========================
+export const recipeCalc = onRequest({ region: "southamerica-east1" }, async (req, res) => {
+  try {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") return void sendNoContent(res);
+    if (req.method !== "POST") return void sendError(res, "Use POST", 405);
+
+    const body = req.body ?? {};
+    const ingredientsInput = Array.isArray(body.ingredients) ? body.ingredients : null;
+    if (!ingredientsInput || ingredientsInput.length === 0) {
+      return void sendError(res, "ingredients deve ser um array com pelo menos 1 item", 400);
+    }
+
+    const servings = Number(body.servings ?? 1);
+    if (!Number.isFinite(servings) || servings <= 0) {
+      return void sendError(res, "servings deve ser > 0", 400);
+    }
+
+    const ingredients: Array<{ index: number; foodId: string; grams: number }> = ingredientsInput.map((ing: any, index: number) => {
+      const foodId = String(ing?.foodId ?? "").trim();
+      const grams = Number(ing?.grams);
+      return { index, foodId, grams };
+    });
+
+    for (const ing of ingredients) {
+      if (!ing.foodId) return void sendError(res, `ingredients[${ing.index}].foodId é obrigatório`, 400);
+      if (!Number.isFinite(ing.grams) || ing.grams <= 0) {
+        return void sendError(res, `ingredients[${ing.index}].grams deve ser > 0`, 400);
+      }
+    }
+
+    const uniqueFoodIds: string[] = Array.from(new Set<string>(ingredients.map((ing: { foodId: string }) => ing.foodId)));
+    const foodSnaps = await Promise.all(uniqueFoodIds.map((foodId) => db.collection("foods").doc(foodId).get()));
+
+    const missingFoodIds: string[] = [];
+    const foodsMap = new Map<string, Food>();
+    for (const snap of foodSnaps) {
+      if (!snap.exists) {
+        missingFoodIds.push(snap.id);
+        continue;
+      }
+      foodsMap.set(snap.id, snap.data() as Food);
+    }
+
+    if (missingFoodIds.length > 0) {
+      return void sendError(res, `Foods não encontrados: ${missingFoodIds.join(", ")}`, 404);
+    }
+
+    const totals: Nutrients = {};
+    const details: Array<{ foodId: string; name_pt: string | null; grams: number; nutrients: Nutrients }> = [];
+
+    for (const ing of ingredients) {
+      const food = foodsMap.get(ing.foodId);
+      if (!food) continue;
+
+      const per100 = (food.nutrientsPer100g ?? {}) as Nutrients;
+      const factor = ing.grams / 100;
+      const ingNutrients: Nutrients = {};
+
+      for (const [k, v] of Object.entries(per100)) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) continue;
+
+        const add = n * factor;
+        totals[k] = Number(((totals[k] ?? 0) + add).toFixed(6));
+        ingNutrients[k] = Number(add.toFixed(6));
+      }
+
+      details.push({
+        foodId: ing.foodId,
+        name_pt: food.name_pt ?? null,
+        grams: ing.grams,
+        nutrients: ingNutrients,
+      });
+    }
+
+    const perServing: Nutrients = {};
+    for (const [k, v] of Object.entries(totals)) {
+      perServing[k] = Number((v / servings).toFixed(6));
+    }
+
+    return void sendOk(res, {
+      servings_used: servings,
+      totals,
+      perServing,
+      ingredients_count: ingredients.length,
+      details,
+    });
+  } catch (e: any) {
+    console.error(e);
+    return void sendError(res, e?.message ?? "Erro interno", 500);
+  }
+});
 export const debugEnv = onRequest({ region: "southamerica-east1" }, (req, res) => {
   sendOk(res, {
     FIRESTORE_EMULATOR_HOST: process.env.FIRESTORE_EMULATOR_HOST ?? null,
@@ -423,3 +577,5 @@ export const debugEnv = onRequest({ region: "southamerica-east1" }, (req, res) =
     FUNCTIONS_EMULATOR: process.env.FUNCTIONS_EMULATOR ?? null,
   });
 });
+
+
